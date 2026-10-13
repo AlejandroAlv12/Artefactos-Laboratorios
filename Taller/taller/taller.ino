@@ -1,6 +1,6 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
-#include <DHT.h>
+#include "DHTesp.h"
 
 // ======================================================
 // CONFIGURACIÓN WIFI
@@ -11,8 +11,7 @@ const char* WIFI_PASSWORD = "brrrrrrr";
 // ======================================================
 // CONFIGURACIÓN MQTT
 // ======================================================
-// Asegúrate de que esta sea la IP que te dio `ipconfig getifaddr en0` en tu Mac
-const char* MQTT_SERVER = "10.175.96.159";
+const char* MQTT_SERVER = "10.175.96.178"; 
 const int MQTT_PORT = 1883;
 
 // Topics utilizados por el dashboard React
@@ -23,12 +22,10 @@ const char* TOPIC_LUZ = "clima/esp32/luz";
 // ======================================================
 // CONFIGURACIÓN DE SENSORES
 // ======================================================
-#define DHTPIN 4
-#define DHTTYPE DHT11   // Cambia a DHT22 si usas el blanco
+#define DHTPIN 18
 #define LDR_PIN 34
 
-DHT dht(DHTPIN, DHTTYPE);
-
+DHTesp dht;
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
 
@@ -72,34 +69,37 @@ void conectarMQTT() {
 // LEER Y PUBLICAR SENSORES
 // ======================================================
 void publicarSensores() {
-  // 1. Obtener temperatura y humedad
-  float temperatura = dht.readTemperature();
-  float humedad = dht.readHumidity();
-
-  // 2. Obtener lectura de iluminación (convertida a porcentaje 0 - 100%)
+  // 1. Obtener lectura de iluminación (convertida a porcentaje 0 - 100%)
   int valorLdr = analogRead(LDR_PIN);
   int porcentajeLuz = map(valorLdr, 0, 4095, 0, 100);
+  char strLuz[8];
+  snprintf(strLuz, sizeof(strLuz), "%d", porcentajeLuz);
+
+  // Publicar luz independientemente de si el DHT falla o no
+  mqttClient.publish(TOPIC_LUZ, strLuz, true);
+
+  // 2. Obtener temperatura y humedad con DHTesp
+  TempAndHumidity datos = dht.getTempAndHumidity();
 
   // Validar lectura del sensor DHT
-  if (isnan(temperatura) || isnan(humedad)) {
-    Serial.println("Error al leer el sensor DHT.");
+  if (dht.getStatus() != DHTesp::ERROR_NONE) {
+    Serial.print("Error al leer el sensor DHT. Causa: ");
+    Serial.println(dht.getStatusString());
+    Serial.print("Luz detectada actualmente: "); Serial.print(strLuz); Serial.println(" %");
     return;
   }
 
-  // 3. Preparar los valores para MQTT
+  // 3. Preparar los valores de temperatura y humedad para MQTT
   char strTemp[8];
   char strHum[8];
-  char strLuz[8];
-  dtostrf(temperatura, 1, 1, strTemp);
-  dtostrf(humedad, 1, 0, strHum);
-  snprintf(strLuz, sizeof(strLuz), "%d", porcentajeLuz);
+  dtostrf(datos.temperature, 1, 1, strTemp);
+  dtostrf(datos.humidity, 1, 0, strHum);
 
   // 4. Publicar en los topics MQTT
   mqttClient.publish(TOPIC_TEMPERATURA, strTemp, true);
   mqttClient.publish(TOPIC_HUMEDAD, strHum, true);
-  mqttClient.publish(TOPIC_LUZ, strLuz, true);
 
-  // 5. Imprimir en el Monitor Serial (ideal para las 5 capturas)
+  // 5. Imprimir en el Monitor Serial (ideal para las capturas del proyecto)
   contadorLecturas++;
   Serial.println("----------------------------------------");
   Serial.print("Medicion #"); Serial.println(contadorLecturas);
@@ -112,9 +112,12 @@ void publicarSensores() {
 void setup() {
   Serial.begin(115200);
 
-  // Inicializar sensores
-  dht.begin();
+  // Inicializar pin de luz
   pinMode(LDR_PIN, INPUT);
+
+  // Inicializar sensor DHT11 con la librería optimizada
+  dht.setup(DHTPIN, DHTesp::DHT11);
+  delay(1000);
 
   conectarWiFi();
   mqttClient.setServer(MQTT_SERVER, MQTT_PORT);
